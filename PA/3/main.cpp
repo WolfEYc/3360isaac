@@ -6,12 +6,30 @@
 #include <algorithm>
 using namespace std;
 
-static pthread_mutex_t bsem;    // Mutex semaphore
-static pthread_cond_t waitTurn;  // Condition variable to control the turn
-static int turn;
+struct Synchronization
+{
+    pthread_mutex_t runSem;    // Mutex semaphore
+    int runTurn; // which thread to run
+
+    pthread_mutex_t outputSem;    // Mutex semaphore
+    pthread_cond_t waitToOutput;  // Condition variable to control the turn
+    int outputTurn; // which thread can output
+
+    Synchronization()
+    {
+        pthread_mutex_init(&runSem, NULL);
+        runTurn = 0;
+
+        pthread_mutex_init(&outputSem, NULL);
+        waitToOutput = PTHREAD_COND_INITIALIZER;
+        outputTurn = 0;
+    }
+};
+
+void* RunSFE(void* main_arg);
 
 struct SFECode {
-    int order;
+public:
     char symbol;
     double px;
     double fx;
@@ -19,8 +37,10 @@ struct SFECode {
     string fbarxbinary;
     pthread_t tid;
 
+
     SFECode() {}
 
+private:
     void SetFBarX()
     {
         fbarx = (fx - px) + px / 2;
@@ -43,119 +63,146 @@ struct SFECode {
             fbx -= j;
         }
     }
+public:
+    void RunCode()
+    {
+        SetFBarX();
+        // set length of fbarbinary
+        SetBinaryLen();
+        // set fbarbinary
+        FbarBinary();
+        //output the code using the cooler way (semaphores and stuff)
+    }
 
     void Output()
     {
-        pthread_mutex_lock(&bsem);
-        while(turn != order){
-            pthread_cond_wait(&waitTurn, &bsem);
-        }
-        pthread_mutex_unlock(&bsem);
-
         cout << "Symbol " << symbol << ", Code: " << fbarxbinary << endl;
-
-        pthread_mutex_lock(&bsem);
-        turn++;
-        pthread_cond_broadcast(&waitTurn);
-        pthread_mutex_unlock(&bsem);
-    }
-
-    void Test()
-    {
-        cout << "Order:" << order << " Symbol:" << symbol << " px:" << px << " fx:" << fx << endl;
     }
 };
 
-//compare sfecodes to sort
 bool compSFE(SFECode& left, SFECode& right)
 {
     return right.px < left.px || left.symbol < right.symbol;
 }
 
+class Main {
+private:
+    Synchronization sync;
+    vector<SFECode> codes;
 
-void* RunSFE(void* sfecode_arg)
+    void Output(const int order)
+    {
+        pthread_mutex_lock(&sync.outputSem);
+        while(sync.outputTurn != order){
+            pthread_cond_wait(&sync.waitToOutput, &sync.outputSem);
+        }
+        pthread_mutex_unlock(&sync.outputSem);
+
+        codes[order].Output();
+
+        pthread_mutex_lock(&sync.outputSem);
+        sync.outputTurn++;
+        pthread_cond_broadcast(&sync.waitToOutput);
+        pthread_mutex_unlock(&sync.outputSem);
+    }
+
+    int GetOrder()
+    {
+        pthread_mutex_lock(&sync.runSem);
+        int toRun = sync.runTurn++; // get which code to run on THIS thread
+        pthread_mutex_unlock(&sync.runSem);
+        return toRun;
+    }
+    
+    void OutputHeader()
+    {
+        cout << "SHANNON-FANO-ELIAS Codes:" << endl << endl;
+    }
+    
+    void StartThreads()
+    {
+        for(SFECode& code : codes)
+        {
+            pthread_create(&code.tid, NULL, RunSFE,this);
+        }
+    }
+    
+    void EndThreads()
+    {
+        for(SFECode& code : codes)
+        {
+            pthread_join(code.tid, NULL);
+        }
+    }
+
+    void input()
+    {
+        string symbols;
+
+        getline(cin, symbols);
+
+        map<char, int> freq;
+
+        for (char c : symbols)
+        {
+            freq[c]++;
+        }
+        codes.resize(freq.size());
+
+        int i = 0;
+        double fx = 0.0;
+
+        for (const auto& [symbol, frequency] : freq)
+        {
+            codes[i].symbol = symbol;
+            codes[i].px = (double)frequency / symbols.size();
+
+            i++;
+        }
+
+        sort(codes.begin(), codes.end(), compSFE);
+
+        for (i = 0; i < codes.size(); i++)
+        {
+            fx += codes[i].px;
+            codes[i].fx = fx;
+        }
+    }
+
+public:
+    Main() {}
+
+    void RunThread()
+    {
+        int order = GetOrder();
+        codes[order].RunCode();
+        Output(order);
+    }
+    
+    void Run()
+    {
+        input();
+        OutputHeader();
+        StartThreads();
+        EndThreads();
+    }
+};
+
+void* RunSFE(void* main_arg)
 {
-    SFECode& sfecode = *(SFECode*)sfecode_arg;
-    // set FbarX for this symbol
-    sfecode.SetFBarX();
-    // set length of fbarbinary
-    sfecode.SetBinaryLen();
-    // set fbarbinary
-    sfecode.FbarBinary();
-    //output the code using the cooler way (semaphores and stuff)
-    sfecode.Output();
+    Main& mainArg = *(Main*)main_arg;
+
+    mainArg.RunThread();
 
     return nullptr;
 }
 
-void InitStatic()
-{
-    pthread_mutex_init(&bsem, NULL);
-    waitTurn = PTHREAD_COND_INITIALIZER;
-    turn = 0;
-}
-
-void input(vector<SFECode>& codes)
-{
-    string symbols;
-
-    getline(cin, symbols);
-
-    map<char, int> freq;
-
-    for (char c : symbols)
-    {
-        freq[c]++;
-    }
-    codes.resize(freq.size());
-
-    int i = 0;
-    double fx = 0.0;
-
-    for (const auto& [symbol, frequency] : freq)
-    {
-        codes[i].order = i;
-        codes[i].symbol = symbol;
-        codes[i].px = (double)frequency / symbols.size();
-
-        i++;
-    }
-
-    sort(codes.begin(), codes.end(), compSFE);
-
-    for (i = 0; i < codes.size(); i++)
-    {
-        fx += codes[i].px;
-        codes[i].fx = fx;
-    }
-}
-
-void StartThreads(vector<SFECode>& codes)
-{
-    cout << "SHANNON-FANO-ELIAS Codes:" << endl << endl;
-    for(SFECode& code : codes)
-    {
-        pthread_create(&code.tid, NULL, RunSFE, &code);
-    }
-}
-
-void EndThreads(vector<SFECode>& codes)
-{
-    for(SFECode& code : codes)
-    {
-        pthread_join(code.tid, NULL);
-    }
-}
 
 int main()
 {
-    InitStatic();
+    Main mainArg;
 
-    vector<SFECode> codes;
-
-    input(codes);
-    StartThreads(codes);
-    EndThreads(codes);
+    mainArg.Run();
 
     return EXIT_SUCCESS;
 }
