@@ -66,6 +66,7 @@ struct SFECode {
     }
 };
 
+//compare sfecodes to sort
 bool compSFE(SFECode& left, SFECode& right)
 {
     return right.px < left.px || left.symbol < right.symbol;
